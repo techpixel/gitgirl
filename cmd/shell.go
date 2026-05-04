@@ -37,6 +37,12 @@ const fishFunctionAutoload = `function gg
 end
 `
 
+const fishConfdSnippet = `if type -q gg
+    command gg refresh --if-stale </dev/null >/dev/null 2>&1 &
+    disown 2>/dev/null
+end
+`
+
 func posixWrapper(shell string) string {
 	return fmt.Sprintf(`if command -v gg >/dev/null 2>&1; then
   gg() {
@@ -50,6 +56,8 @@ func posixWrapper(shell string) string {
     fi
   }
   eval "$(command gg completion %s)"
+  command gg refresh --if-stale </dev/null >/dev/null 2>&1 &
+  disown 2>/dev/null
 fi
 `, shell)
 }
@@ -90,6 +98,7 @@ func installFishAutoload() (ShellInstallResult, error) {
 	}
 	fnPath := filepath.Join(home, ".config", "fish", "functions", "gg.fish")
 	compPath := filepath.Join(home, ".config", "fish", "completions", "gg.fish")
+	confdPath := filepath.Join(home, ".config", "fish", "conf.d", "gg.fish")
 	res.Path = fnPath
 
 	var compBuf bytes.Buffer
@@ -105,14 +114,18 @@ func installFishAutoload() (ShellInstallResult, error) {
 	if err != nil {
 		return res, err
 	}
+	confdAction, err := writeFishFile(confdPath, []byte(fishConfdSnippet))
+	if err != nil {
+		return res, err
+	}
 
 	cfgPath := filepath.Join(home, ".config", "fish", "config.fish")
 	cleanupOldShellBlock(cfgPath)
 
 	switch {
-	case fnAction == ShellInstalled || compAction == ShellInstalled:
+	case fnAction == ShellInstalled || compAction == ShellInstalled || confdAction == ShellInstalled:
 		res.Action = ShellInstalled
-	case fnAction == ShellUpdated || compAction == ShellUpdated:
+	case fnAction == ShellUpdated || compAction == ShellUpdated || confdAction == ShellUpdated:
 		res.Action = ShellUpdated
 	default:
 		res.Action = ShellUnchanged
