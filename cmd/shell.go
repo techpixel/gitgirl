@@ -26,17 +26,14 @@ type ShellInstallResult struct {
 	Path   string
 }
 
-const fishWrapper = `if type -q gg
-  function gg
-    if test (count $argv) -ge 1; and test $argv[1] = jump
-      set -l target (command gg jump $argv[2..-1])
-      or return $status
-      cd $target
-    else
-      command gg $argv
-    end
+const fishFunctionAutoload = `function gg
+  if test (count $argv) -ge 1; and test $argv[1] = jump
+    set -l target (command gg jump $argv[2..-1])
+    or return $status
+    cd $target
+  else
+    command gg $argv
   end
-  command gg completion fish | source
 end
 `
 
@@ -70,32 +67,6 @@ func detectShell() string {
 	return ""
 }
 
-func shellConfigPath(shell string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	switch shell {
-	case "fish":
-		return filepath.Join(home, ".config", "fish", "config.fish"), nil
-	case "zsh":
-		return filepath.Join(home, ".zshrc"), nil
-	case "bash":
-		return filepath.Join(home, ".bashrc"), nil
-	}
-	return "", fmt.Errorf("unsupported shell %q", shell)
-}
-
-func wrapperFor(shell string) (string, error) {
-	switch shell {
-	case "fish":
-		return fishWrapper, nil
-	case "bash", "zsh":
-		return posixWrapper(shell), nil
-	}
-	return "", fmt.Errorf("unsupported shell %q", shell)
-}
-
 func installShellWrapper() (ShellInstallResult, error) {
 	res := ShellInstallResult{}
 	shell := detectShell()
@@ -105,17 +76,122 @@ func installShellWrapper() (ShellInstallResult, error) {
 	}
 	res.Shell = shell
 
-	cfg, err := shellConfigPath(shell)
+	if shell == "fish" {
+		return installFishAutoload()
+	}
+	return installPosixWrapper(shell)
+}
+
+func installFishAutoload() (ShellInstallResult, error) {
+	res := ShellInstallResult{Shell: "fish"}
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return res, err
+	}
+	fnPath := filepath.Join(home, ".config", "fish", "functions", "gg.fish")
+	compPath := filepath.Join(home, ".config", "fish", "completions", "gg.fish")
+	res.Path = fnPath
+
+	var compBuf bytes.Buffer
+	if err := rootCmd.GenFishCompletion(&compBuf, true); err != nil {
+		return res, fmt.Errorf("generate fish completion: %w", err)
+	}
+
+	fnAction, err := writeFishFile(fnPath, []byte(fishFunctionAutoload))
+	if err != nil {
+		return res, err
+	}
+	compAction, err := writeFishFile(compPath, compBuf.Bytes())
+	if err != nil {
+		return res, err
+	}
+
+	cfgPath := filepath.Join(home, ".config", "fish", "config.fish")
+	cleanupOldShellBlock(cfgPath)
+
+	switch {
+	case fnAction == ShellInstalled || compAction == ShellInstalled:
+		res.Action = ShellInstalled
+	case fnAction == ShellUpdated || compAction == ShellUpdated:
+		res.Action = ShellUpdated
+	default:
+		res.Action = ShellUnchanged
+	}
+	return res, nil
+}
+
+func writeFishFile(path string, content []byte) (string, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	if bytes.Equal(existing, content) {
+		return ShellUnchanged, nil
+	}
+	action := ShellUpdated
+	if os.IsNotExist(err) || len(existing) == 0 {
+		action = ShellInstalled
+	}
+	return action, os.WriteFile(path, content, 0o644)
+}
+
+func cleanupOldShellBlock(cfgPath string) {
+	existing, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return
+	}
+	if !bytes.Contains(existing, []byte(shellMarkerBegin)) {
+		return
+	}
+	cleaned := stripShellBlock(existing)
+	if !bytes.Equal(cleaned, existing) {
+		_ = os.WriteFile(cfgPath, cleaned, 0o644)
+	}
+}
+
+func stripShellBlock(existing []byte) []byte {
+	begin := []byte(shellMarkerBegin)
+	end := []byte(shellMarkerEnd)
+	bi := bytes.Index(existing, begin)
+	if bi < 0 {
+		return existing
+	}
+	rest := existing[bi:]
+	ei := bytes.Index(rest, end)
+	if ei < 0 {
+		return existing
+	}
+	afterEnd := bi + ei + len(end)
+	if afterEnd < len(existing) && existing[afterEnd] == '\n' {
+		afterEnd++
+	}
+	var buf bytes.Buffer
+	buf.Write(existing[:bi])
+	buf.Write(existing[afterEnd:])
+	return buf.Bytes()
+}
+
+func installPosixWrapper(shell string) (ShellInstallResult, error) {
+	res := ShellInstallResult{Shell: shell}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return res, err
+	}
+	var cfg string
+	switch shell {
+	case "zsh":
+		cfg = filepath.Join(home, ".zshrc")
+	case "bash":
+		cfg = filepath.Join(home, ".bashrc")
+	default:
+		return res, fmt.Errorf("unsupported shell %q", shell)
 	}
 	res.Path = cfg
 
-	wrapper, err := wrapperFor(shell)
-	if err != nil {
-		return res, err
-	}
-	full := shellMarkerBegin + "\n" + wrapper + shellMarkerEnd + "\n"
+	full := shellMarkerBegin + "\n" + posixWrapper(shell) + shellMarkerEnd + "\n"
 
 	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
 		return res, err
