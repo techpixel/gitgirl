@@ -11,8 +11,9 @@ import (
 var jumpAll bool
 
 var jumpCmd = &cobra.Command{
-	Use:   "jump [repo]",
-	Short: "Print the path of an indexed repository (or the default index root)",
+	Use:     "jump [repo]",
+	Aliases: []string{"path"},
+	Short:   "Print the path of an indexed repository (or the default index root)",
 	Long: `Print the absolute path of a repository previously indexed by 'gg init'.
 
 The wrapper installed by 'gg init' captures this output and runs 'cd'
@@ -49,32 +50,40 @@ func runJump(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	query := strings.ToLower(args[0])
+	repo, err := resolveRepo(args[0], jumpAll)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), repo.Path)
+	return nil
+}
+
+func resolveRepo(query string, all bool) (Repo, error) {
 	var repos []Repo
 	var err error
-	if jumpAll {
+	if all {
 		repos, err = loadAllRepos()
 	} else {
 		repos, err = loadDefaultRepos()
 	}
 	if err != nil {
-		return err
+		return Repo{}, err
 	}
 	if len(repos) == 0 {
-		return fmt.Errorf("no repositories indexed yet — run 'gg init <folder>' first")
+		return Repo{}, fmt.Errorf("no repositories indexed yet — run 'gg init <folder>' first")
 	}
 
+	q := strings.ToLower(query)
 	var exact, sub []Repo
 	for _, r := range repos {
 		name := strings.ToLower(r.Name)
 		switch {
-		case name == query:
+		case name == q:
 			exact = append(exact, r)
-		case strings.Contains(name, query):
+		case strings.Contains(name, q):
 			sub = append(sub, r)
 		}
 	}
-
 	matches := exact
 	if len(matches) == 0 {
 		matches = sub
@@ -82,17 +91,16 @@ func runJump(cmd *cobra.Command, args []string) error {
 
 	switch len(matches) {
 	case 0:
-		return fmt.Errorf("no indexed repository matches %q", args[0])
+		return Repo{}, fmt.Errorf("no indexed repository matches %q", query)
 	case 1:
-		fmt.Fprintln(cmd.OutOrStdout(), matches[0].Path)
-		return nil
+		return matches[0], nil
 	default:
 		var b strings.Builder
-		fmt.Fprintf(&b, "multiple repositories match %q:\n", args[0])
+		fmt.Fprintf(&b, "multiple repositories match %q:\n", query)
 		for _, m := range matches {
 			fmt.Fprintf(&b, "  %s\n", m.Path)
 		}
-		return fmt.Errorf("%s", strings.TrimRight(b.String(), "\n"))
+		return Repo{}, fmt.Errorf("%s", strings.TrimRight(b.String(), "\n"))
 	}
 }
 
