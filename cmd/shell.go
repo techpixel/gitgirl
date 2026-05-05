@@ -27,7 +27,7 @@ type ShellInstallResult struct {
 }
 
 const fishFunctionAutoload = `function gg
-  if test (count $argv) -ge 1; and contains -- $argv[1] jump clone
+  if test (count $argv) -ge 1; and contains -- $argv[1] jump clone new
     set -l __gg_sub $argv[1]
     set -l target (command gg $__gg_sub $argv[2..-1])
     or return $status
@@ -48,7 +48,7 @@ func posixWrapper(shell string) string {
 	return fmt.Sprintf(`if command -v gg >/dev/null 2>&1; then
   gg() {
     case "$1" in
-      jump|clone)
+      jump|clone|new)
         local __gg_sub="$1"
         shift
         local __gg_target
