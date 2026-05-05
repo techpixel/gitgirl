@@ -47,6 +47,8 @@ func init() {
 }
 
 func runList(cmd *cobra.Command, args []string) error {
+	refreshAllIndexes(cmd.ErrOrStderr())
+
 	if listIndex {
 		return runListIndex(cmd, args)
 	}
@@ -202,13 +204,17 @@ func printRepoTable(w io.Writer, repos []Repo) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tBRANCH\tPATH")
+	fmt.Fprintln(tw, " \tNAME\tBRANCH\tPATH")
 	for _, r := range repos {
 		b := r.Branch
 		if b == "" {
 			b = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Name, b, r.Path)
+		marker := " "
+		if r.Diverged {
+			marker = "*"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", marker, r.Name, b, r.Path)
 	}
 	return tw.Flush()
 }

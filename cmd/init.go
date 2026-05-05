@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,11 +24,13 @@ type Repo struct {
 	Branch    string `json:"branch,omitempty"`
 	HeadSHA   string `json:"head_sha,omitempty"`
 	UpdatedAt string `json:"updated_at,omitempty"`
+	Diverged  bool   `json:"diverged,omitempty"`
 }
 
 type Index struct {
 	Root      string    `json:"root"`
 	IndexedAt time.Time `json:"indexed_at"`
+	StateHash string    `json:"state_hash,omitempty"`
 	Repos     []Repo    `json:"repos"`
 }
 
@@ -138,9 +143,15 @@ func indexRoot(root, out string, maxDepth int) (int, error) {
 		return 0, fmt.Errorf("find repos: %w", err)
 	}
 
+	paths := make([]string, len(repos))
+	for i, r := range repos {
+		paths[i] = r.Path
+	}
+
 	idx := Index{
 		Root:      root,
 		IndexedAt: time.Now(),
+		StateHash: stateHashForPaths(paths),
 		Repos:     repos,
 	}
 
@@ -168,6 +179,9 @@ func refreshAllIndexes(errOut io.Writer) {
 			fmt.Fprintf(errOut, "warning: registered root unavailable (%s): %v\n", root, err)
 			continue
 		}
+		if !rootChanged(root) {
+			continue
+		}
 		out := filepath.Join(root, ".gg", "index.json")
 		if _, err := indexRoot(root, out, defaultMaxDepth); err != nil {
 			fmt.Fprintf(errOut, "warning: reindex %s: %v\n", root, err)
@@ -175,7 +189,46 @@ func refreshAllIndexes(errOut io.Writer) {
 	}
 }
 
-func findRepos(root string, maxDepth int) ([]Repo, error) {
+func rootChanged(root string) bool {
+	idxPath := filepath.Join(root, ".gg", "index.json")
+	data, err := os.ReadFile(idxPath)
+	if err != nil {
+		return true
+	}
+	var idx Index
+	if err := json.Unmarshal(data, &idx); err != nil {
+		return true
+	}
+	if idx.StateHash == "" {
+		return true
+	}
+	paths, err := findRepoPaths(root, defaultMaxDepth)
+	if err != nil {
+		return true
+	}
+	return stateHashForPaths(paths) != idx.StateHash
+}
+
+func stateHashForPaths(paths []string) string {
+	sorted := append([]string(nil), paths...)
+	sort.Strings(sorted)
+	h := sha256.New()
+	for _, p := range sorted {
+		gitDir := filepath.Join(p, ".git")
+		if info, err := os.Stat(gitDir); err == nil {
+			fmt.Fprintf(h, "%s|d|%d\n", p, info.ModTime().UnixNano())
+		}
+		for _, f := range []string{"HEAD", "index"} {
+			if info, err := os.Stat(filepath.Join(gitDir, f)); err == nil {
+				fmt.Fprintf(h, "%s|%s|%d\n", p, f, info.ModTime().UnixNano())
+			}
+		}
+	}
+	sum := h.Sum(nil)
+	return hex.EncodeToString(sum[:8])
+}
+
+func findRepoPaths(root string, maxDepth int) ([]string, error) {
 	var paths []string
 	rootDepth := strings.Count(filepath.Clean(root), string(os.PathSeparator))
 	sep := string(os.PathSeparator)
@@ -207,6 +260,11 @@ func findRepos(root string, maxDepth int) ([]Repo, error) {
 		}
 		return nil
 	})
+	return paths, err
+}
+
+func findRepos(root string, maxDepth int) ([]Repo, error) {
+	paths, err := findRepoPaths(root, maxDepth)
 	if err != nil {
 		return nil, err
 	}
@@ -235,6 +293,7 @@ func inspectRepo(path string) Repo {
 		Branch:    gitOutput(path, "rev-parse", "--abbrev-ref", "HEAD"),
 		HeadSHA:   gitOutput(path, "rev-parse", "HEAD"),
 		UpdatedAt: gitOutput(path, "log", "-1", "--format=%cI"),
+		Diverged:  !isStale(path),
 	}
 }
 
